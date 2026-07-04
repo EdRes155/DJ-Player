@@ -12,7 +12,7 @@ import {
 } from '../services/djEngine.js';
 import { generateDJScript } from '../services/djScript.js';
 import { buildTasteProfile } from '../services/tasteProfile.js';
-import { prepareDJVoice } from '../services/voice.js';
+import { prepareDJVoice, stopAnyVoice } from '../services/voice.js';
 import { getAudioContext, performTransition } from '../services/audioMixer.js';
 
 const TRANSITION_LEAD_MS = 4000;   // inicia la transición 4 s antes del final
@@ -267,6 +267,29 @@ export default function DJPlayer({ platform, onLogout }) {
     }, 1000);
     return () => clearInterval(interval);
   }, [sessionOn, getPosition, performNextTransition]);
+
+  // Guardián de segundo plano: los navegadores NO permiten voz con la app
+  // oculta, y una transición congelada dejaría la música al 15-35 % de
+  // volumen (por eso "no se escuchaba"). Al salir: cortamos la voz y
+  // subimos la música a 100 % de inmediato. Al volver: destrancamos el
+  // sintetizador y normalizamos el volumen.
+  useEffect(() => {
+    if (!sessionOn) return undefined;
+    const onVisibility = async () => {
+      if (document.visibilityState === 'hidden') {
+        stopAnyVoice();
+        setDjTalking(false);
+        try { await setVolume(1.0); } catch { /* mejor esfuerzo */ }
+      } else {
+        try { window.speechSynthesis?.resume(); } catch { /* nada */ }
+        if (!transitioningRef.current) {
+          try { await setVolume(1.0); } catch { /* mejor esfuerzo */ }
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [sessionOn, setVolume]);
 
   // Mantener la pantalla despierta durante la sesión (Wake Lock).
   // Con pantalla apagada el navegador congela la app: no habría voz ni
