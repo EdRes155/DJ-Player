@@ -5,11 +5,17 @@
 // ============================================================
 
 import { generateDJVoice } from './elevenLabsAPI.js';
-import { speakLocal, localTTSAvailable } from './localTTS.js';
-import { playVoiceBuffer, getAudioContext } from './audioMixer.js';
+import { speakLocal, stopLocal, localTTSAvailable } from './localTTS.js';
+import { playVoiceBuffer, stopVoicePlayback, getAudioContext } from './audioMixer.js';
 
 const PROVIDER = (import.meta.env.VITE_TTS_PROVIDER || 'auto').toLowerCase();
 const HAS_ELEVEN = !!import.meta.env.VITE_ELEVENLABS_API_KEY && !!import.meta.env.VITE_ELEVENLABS_VOICE_ID;
+
+/** Corta cualquier voz del DJ que esté sonando (local o ElevenLabs). */
+export function stopAnyVoice() {
+  stopLocal();
+  stopVoicePlayback();
+}
 
 export async function prepareDJVoice(text) {
   if (PROVIDER === 'elevenlabs' || (PROVIDER === 'auto' && HAS_ELEVEN)) {

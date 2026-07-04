@@ -38,9 +38,14 @@ export async function speakLocal(text, { rate = 1.02, pitch = 1.0, onStart } = {
     else utter.lang = 'es-MX';
     utter.rate = rate;
     utter.pitch = pitch;
+    // Chrome pausa utterances largos (~15 s); un resume periódico lo evita
+    const keepAlive = setInterval(() => {
+      try { if (speechSynthesis.speaking) speechSynthesis.resume(); } catch { /* nada */ }
+    }, 5000);
+    const done = () => { clearInterval(keepAlive); resolve(); };
     utter.onstart = () => onStart?.();
-    utter.onend = () => resolve();
-    utter.onerror = () => resolve();
+    utter.onend = done;
+    utter.onerror = done;
     speechSynthesis.cancel();
     speechSynthesis.speak(utter);
   });

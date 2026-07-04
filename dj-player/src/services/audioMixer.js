@@ -25,6 +25,8 @@ export function getAudioContext() {
  * Reproduce el AudioBuffer de la voz DJ con fade in/out propio.
  * @returns {Promise<void>} resuelve cuando la voz termina
  */
+let activeVoiceSource = null;
+
 export function playVoiceBuffer(buffer, { fadeIn = 0.15, fadeOut = 0.25, gainDb = 0 } = {}) {
   return new Promise((resolve) => {
     const ctx = getAudioContext();
@@ -41,9 +43,19 @@ export function playVoiceBuffer(buffer, { fadeIn = 0.15, fadeOut = 0.25, gainDb 
     gain.gain.setValueAtTime(level, now + buffer.duration - fadeOut);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + buffer.duration);
 
-    source.onended = () => resolve();
+    activeVoiceSource = source;
+    source.onended = () => {
+      if (activeVoiceSource === source) activeVoiceSource = null;
+      resolve();
+    };
     source.start(now);
   });
+}
+
+/** Detiene la voz DJ (ElevenLabs) al instante, si está sonando. */
+export function stopVoicePlayback() {
+  try { activeVoiceSource?.stop(); } catch { /* ya detenida */ }
+  activeVoiceSource = null;
 }
 
 /**
@@ -52,8 +64,17 @@ export function playVoiceBuffer(buffer, { fadeIn = 0.15, fadeOut = 0.25, gainDb 
  * Web Playback SDK (suave) o la API de Connect (por pasos).
  */
 export async function rampVolume(setVolume, from, to, durationMs, steps = 12) {
+  // En segundo plano los timers se congelan: aplica el volumen final directo
+  if (typeof document !== 'undefined' && document.hidden) {
+    try { await setVolume(to); } catch { /* mejor esfuerzo */ }
+    return;
+  }
   const stepTime = durationMs / steps;
   for (let i = 1; i <= steps; i++) {
+    if (typeof document !== 'undefined' && document.hidden) {
+      try { await setVolume(to); } catch { /* mejor esfuerzo */ }
+      return;
+    }
     // curva de igual potencia: suena más natural que lineal
     const t = i / steps;
     const value = from + (to - from) * Math.sin((t * Math.PI) / 2);
