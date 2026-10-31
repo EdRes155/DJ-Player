@@ -63,7 +63,7 @@ export function stopVoicePlayback() {
  * Acepta cualquier función setVolume(0..1) — puede ser el
  * Web Playback SDK (suave) o la API de Connect (por pasos).
  */
-export async function rampVolume(setVolume, from, to, durationMs, steps = 12) {
+export async function rampVolume(setVolume, from, to, durationMs, steps = 12, isActive = () => true) {
   // En segundo plano los timers se congelan: aplica el volumen final directo
   if (typeof document !== 'undefined' && document.hidden) {
     try { await setVolume(to); } catch { /* mejor esfuerzo */ }
@@ -71,6 +71,7 @@ export async function rampVolume(setVolume, from, to, durationMs, steps = 12) {
   }
   const stepTime = durationMs / steps;
   for (let i = 1; i <= steps; i++) {
+    if (!isActive()) return; // la sesión terminó: no tocamos más el volumen
     if (typeof document !== 'undefined' && document.hidden) {
       try { await setVolume(to); } catch { /* mejor esfuerzo */ }
       return;
@@ -94,21 +95,26 @@ export async function rampVolume(setVolume, from, to, durationMs, steps = 12) {
  * @param {Function} params.playNext   - inicia el siguiente track
  * @param {object|null} params.voice  - { speak: () => Promise } o null = solo fade
  * @param {number} params.duckLevel   - volumen bajo la voz (-3 dB ≈ 0.35)
+ * @param {Function} params.isActive  - false = sesión cancelada, abortar
  */
-export async function performTransition({ setVolume, playNext, voice, duckLevel = 0.35 }) {
+export async function performTransition({ setVolume, playNext, voice, duckLevel = 0.35, isActive = () => true }) {
   // 1) Fade out del track actual (2 s)
-  await rampVolume(setVolume, 1.0, 0.15, 2000);
+  await rampVolume(setVolume, 1.0, 0.15, 2000, 12, isActive);
+  if (!isActive()) return;
 
   if (voice && voice.provider !== 'none') {
     // 2) Arranca el siguiente track "por debajo" de la voz
     await playNext();
+    if (!isActive()) return;
     await setVolume(duckLevel);
     // 3) Voz DJ encima del intro del siguiente track
-    await voice.speak();
+    try { await voice.speak(); } catch (err) { console.warn('[Mixer] La voz falló:', err.message); }
+    if (!isActive()) return;
     // 4) Sube el siguiente track a volumen normal (2 s)
-    await rampVolume(setVolume, duckLevel, 1.0, 2000);
+    await rampVolume(setVolume, duckLevel, 1.0, 2000, 12, isActive);
   } else {
     await playNext();
-    await rampVolume(setVolume, 0.15, 1.0, 3000);
+    if (!isActive()) return;
+    await rampVolume(setVolume, 0.15, 1.0, 3000, 12, isActive);
   }
 }

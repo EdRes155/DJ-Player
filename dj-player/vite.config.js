@@ -16,7 +16,6 @@ export default defineConfig({
         theme_color: '#a855f7',
         background_color: '#0a0a0f',
         display: 'standalone',
-        orientation: 'portrait',
         start_url: './',
         icons: [
           { src: 'icons/icon-192x192.png', sizes: '192x192', type: 'image/png' },
@@ -29,21 +28,15 @@ export default defineConfig({
         ]
       },
       workbox: {
+        // /api/* son funciones del servidor: nunca devolver index.html por ellas
+        navigateFallbackDenylist: [/^\/api\//],
+        // Sin caché para api.spotify.com ni para /api/tts: son datos personales
+        // de la cuenta (historial, playlists, gustos) y no deben quedar en disco.
         runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/api\.spotify\.com\/.*/,
-            handler: 'NetworkFirst',
-            options: { cacheName: 'spotify-api', expiration: { maxAgeSeconds: 3600 } }
-          },
           {
             urlPattern: /^https:\/\/i\.scdn\.co\/.*/,
             handler: 'CacheFirst',
             options: { cacheName: 'spotify-images', expiration: { maxAgeSeconds: 604800, maxEntries: 200 } }
-          },
-          {
-            urlPattern: /^https:\/\/api\.elevenlabs\.io\/.*/,
-            handler: 'NetworkFirst',
-            options: { cacheName: 'tts-audio', expiration: { maxAgeSeconds: 86400 } }
           }
         ]
       }

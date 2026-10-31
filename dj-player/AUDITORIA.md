@@ -135,3 +135,27 @@ OAuth utiliza PKCE S256 y no necesita un secreto de cliente Spotify en el navega
 
 Pruebas de aceptación pendientes con cuenta real: OAuth completo, Spotify Premium, iOS/Safari real, sesiones superiores a 50 canciones, cambios de dispositivo, app en segundo plano y recuperación después de pérdida de red.
 
+
+## Estado de las correcciones
+
+| Hallazgo | Estado | Cambio principal |
+|---|---|---|
+| F01 Connect sin dispositivo | Corregido | Aviso con instrucciones y reintento siempre visibles; re-detección automática cada 5 s y al volver a la app (`useSpotifyPlayer.js`, `DJPlayer.jsx`). |
+| F02 Cola > 50 canciones | Corregido | Se registra el bloque enviado a Spotify; al llegar al final se carga el siguiente. Las canciones agregadas ya no se mandan a la cola nativa (sonaban antes de tiempo y desalineaban al DJ). |
+| F03 Refresh tras «Salir» | Corregido | Generación de sesión, cancelación de peticiones en vuelo y renovación centralizada (`spotifyAPI.js`). Prueba: `tests/spotifyAPI.test.js`. |
+| F04 Limpieza del reproductor | Corregido | Cleanup común: detiene sondeos y reintentos, `player.disconnect()` y cancela inicializaciones pendientes. |
+| F05 Datos personales en caché | Corregido | Eliminada la caché de `api.spotify.com`; `logout()` y el arranque purgan `spotify-api` y `tts-audio`. |
+| F06 401 persistente | Corregido | Una renovación y un reintento como máximo; reintento único ante 429 con `Retry-After`. |
+| F07 Voz local bloqueada | Corregido | Timeout al cargar voces y al hablar; el volumen se restaura en `finally`. Prueba: `tests/localTTS.test.js`. |
+| F08 Carrera de búsqueda | Corregido | Identificador de petición; errores visibles al usuario. |
+| F09 Accesibilidad | Corregido | Fondos con texto blanco ≥ 5,7:1, aviso Premium 7,2:1, nombre en la barra de progreso, `aria-pressed`, regiones vivas. |
+| F10 Dependencias | Mitigado | Electron 45, electron-builder 26, Vite 6.4.5. Sin avisos críticos ni altos; quedan moderados en `glob`/`minimatch` de herramientas cuyo «arreglo» sería un downgrade. Producción: 0. |
+| F11 Clave ElevenLabs | Corregido | Nueva función `api/tts.js`: clave solo en servidor, verificación del token de Spotify, lista de usuarios permitidos, límites de longitud y frecuencia. Prueba: `tests/tts-api.test.js`. |
+| Desbordamiento a 320 px | Corregido | `min-w-0` en el input; verificado 320 px de ancho en Chromium. |
+| Progreso discontinuo | Corregido | En modo SDK se consulta la posición real cada segundo mientras suena. |
+| Terminar sesión DJ | Corregido | Botón «Terminar» que cancela transiciones y voz, pausa y libera los selectores. |
+| Orientación forzada | Corregido | Eliminada del manifiesto. |
+| Lint / pruebas / CI | Corregido | `eslint.config.js`, Vitest (15 pruebas) y workflow `.github/workflows/ci.yml`. |
+| Cabeceras HTTP | Corregido | `vercel.json` con CSP, `nosniff`, `Referrer-Policy`, `X-Frame-Options` y `Permissions-Policy`. |
+
+Pendiente de validar con cuenta real: Spotify Premium, Safari/iPhone, sesiones de más de 50 canciones y la CSP con el Web Playback SDK en producción.

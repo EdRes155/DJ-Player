@@ -25,15 +25,17 @@ export default function NowPlaying({ track, position, duration, djTalking }) {
         ) : (
           <div className="w-full h-full rounded-3xl bg-panel" />
         )}
-        {djTalking && (
-          <div className="absolute inset-x-0 bottom-0 rounded-b-3xl bg-ink/80 backdrop-blur px-4 py-3 flex items-center gap-3">
-            <div className="flex gap-1 h-5 items-end shrink-0">
-              <span className="eq-bar h-5" /><span className="eq-bar h-5" />
-              <span className="eq-bar h-5" /><span className="eq-bar h-5" />
+        <div role="status" aria-live="polite">
+          {djTalking && (
+            <div className="absolute inset-x-0 bottom-0 rounded-b-3xl bg-ink/80 backdrop-blur px-4 py-3 flex items-center gap-3">
+              <div className="flex gap-1 h-5 items-end shrink-0" aria-hidden="true">
+                <span className="eq-bar h-5" /><span className="eq-bar h-5" />
+                <span className="eq-bar h-5" /><span className="eq-bar h-5" />
+              </div>
+              <p className="text-sm text-neon-soft font-medium">El DJ está hablando…</p>
             </div>
-            <p className="text-sm text-neon-soft font-medium">El DJ está hablando…</p>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <h2 className="font-display font-bold text-2xl text-center leading-tight mb-1">{track.name}</h2>
@@ -48,7 +50,9 @@ export default function NowPlaying({ track, position, duration, djTalking }) {
 
       <div className="w-full max-w-sm">
         <div className="h-1.5 bg-line rounded-full overflow-hidden" role="progressbar"
-             aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}>
+             aria-label="Progreso de la canción"
+             aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}
+             aria-valuetext={`${msToTime(position)} de ${msToTime(duration)}`}>
           <div className="h-full bg-neon rounded-full transition-[width] duration-500"
                style={{ width: `${progress}%` }} />
         </div>

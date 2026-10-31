@@ -1,53 +1,66 @@
 // ============================================================
 // ElevenLabs TTS — la voz del DJ
-// Devuelve un AudioBuffer listo para el audioMixer.
+// La clave de ElevenLabs vive SOLO en el servidor (api/tts.js).
+// El navegador manda el guion + su token de Spotify al backend
+// y recibe el MP3. Devuelve un AudioBuffer listo para el audioMixer.
 // ============================================================
 
-const API_KEY = import.meta.env.VITE_ELEVENLABS_API_KEY;
-const VOICE_ID = import.meta.env.VITE_ELEVENLABS_VOICE_ID;
-const BASE = 'https://api.elevenlabs.io/v1';
+import { getAccessToken } from './spotifyAPI.js';
+
+// En la web: misma origin. En Electron (file://) usa la URL absoluta del deploy.
+const ENDPOINT = import.meta.env.VITE_TTS_ENDPOINT || '/api/tts';
+const REQUEST_TIMEOUT_MS = 15000;
+const CACHE_MAX = 40;
 
 // Cache en memoria para no pagar dos veces el mismo guion
 const voiceCache = new Map();
+// Si el backend dice que no está configurado, no insistimos en esta sesión
+let disabledReason = null;
+
+export function elevenLabsDisabled() {
+  return disabledReason;
+}
 
 /**
  * Genera la voz del DJ a partir de un guion.
  * @param {string} text - Guion generado por djScript.js
  * @param {AudioContext} audioContext - Contexto para decodificar
- * @returns {Promise<AudioBuffer|null>}
+ * @returns {Promise<AudioBuffer|null>} null = usar otra voz / sin voz
  */
 export async function generateDJVoice(text, audioContext) {
-  if (!API_KEY || !VOICE_ID) {
-    console.warn('[ElevenLabs] Sin API key: el DJ será silencioso (solo fades).');
-    return null;
-  }
+  if (disabledReason) return null;
   if (voiceCache.has(text)) return voiceCache.get(text);
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(`${BASE}/text-to-speech/${VOICE_ID}?output_format=mp3_44100_128`, {
+    const token = await getAccessToken();
+    if (!token) return null;
+    const res = await fetch(ENDPOINT, {
       method: 'POST',
-      headers: {
-        'xi-api-key': API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        text,
-        model_id: 'eleven_multilingual_v2', // soporta español natural
-        voice_settings: {
-          stability: 0.45,        // un poco de variación = más humano
-          similarity_boost: 0.8,
-          style: 0.35,            // energía de locutor sin exagerar
-          use_speaker_boost: true
-        }
-      })
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
     });
-    if (!res.ok) throw new Error(`ElevenLabs ${res.status}`);
+    if (!res.ok) {
+      const info = await res.json().catch(() => ({}));
+      if (res.status === 503 || res.status === 403 || res.status === 404) {
+        disabledReason = info.error || `http_${res.status}`;
+        if (info.spotifyUserId) {
+          console.warn(`[ElevenLabs] Tu usuario de Spotify (${info.spotifyUserId}) no está en ALLOWED_SPOTIFY_USERS.`);
+        }
+      }
+      throw new Error(`TTS ${res.status} ${info.error || ''}`.trim());
+    }
     const arrayBuffer = await res.arrayBuffer();
     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    if (voiceCache.size >= CACHE_MAX) voiceCache.delete(voiceCache.keys().next().value);
     voiceCache.set(text, audioBuffer);
     return audioBuffer;
   } catch (err) {
-    console.error('[ElevenLabs] Error generando voz:', err);
-    return null; // la transición sigue funcionando sin voz
+    console.warn('[ElevenLabs] Sin voz premium para este guion:', err.message || err);
+    return null; // la transición sigue funcionando (voz local o solo fades)
+  } finally {
+    clearTimeout(timer);
   }
 }

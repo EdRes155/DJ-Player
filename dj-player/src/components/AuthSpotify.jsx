@@ -27,7 +27,7 @@ export default function AuthSpotify({ platform }) {
         Conectar con Spotify
       </button>
 
-      <p className="text-mist/60 text-xs mt-6">
+      <p className="text-mist text-xs mt-6">
         Se requiere Spotify Premium · {platform === 'pwa' ? 'App instalada' : platform === 'electron' ? 'Windows' : 'Navegador'}
       </p>
     </main>

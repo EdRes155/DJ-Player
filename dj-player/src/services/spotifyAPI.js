@@ -91,6 +91,19 @@ function saveTokens(data) {
   localStorage.setItem('sp_expires', String(Date.now() + data.expires_in * 1000));
 }
 
+// Generación de sesión: logout() la incrementa y cualquier operación
+// iniciada antes (refresh, peticiones a la API) deja de tener efecto.
+let sessionGen = 0;
+const pending = new Set();       // AbortControllers de peticiones en vuelo
+let refreshPromise = null;       // renovación centralizada (sin concurrencia)
+
+function trackedFetch(url, options = {}) {
+  const controller = new AbortController();
+  pending.add(controller);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => pending.delete(controller));
+}
+
 export function getStoredToken() {
   const token = localStorage.getItem('sp_token');
   const expires = Number(localStorage.getItem('sp_expires') || 0);
@@ -98,11 +111,19 @@ export function getStoredToken() {
   return null;
 }
 
-export async function refreshToken() {
+export function refreshToken() {
+  if (!refreshPromise) {
+    refreshPromise = doRefresh().finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+}
+
+async function doRefresh() {
   const refresh = localStorage.getItem('sp_refresh');
   if (!refresh) return null;
+  const gen = sessionGen;
   try {
-    const res = await fetch(TOKEN_URL, {
+    const res = await trackedFetch(TOKEN_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -112,26 +133,50 @@ export async function refreshToken() {
       })
     });
     const data = await res.json();
+    // Si cerraron sesión mientras esperábamos, NO restauramos credenciales
+    if (gen !== sessionGen) return null;
     if (data.access_token) {
       saveTokens(data);
       return data.access_token;
     }
     return null;
   } catch (err) {
-    console.error('[Spotify] Error al refrescar token:', err);
+    if (gen === sessionGen) console.error('[Spotify] Error al refrescar token:', err);
     return null;
   }
 }
 
+/** Token vigente (renovándolo si hace falta) o null. */
+export async function getAccessToken() {
+  return getStoredToken() || (await refreshToken());
+}
+
+// Cachés del service worker que pudieron guardar datos de la cuenta
+// (versiones anteriores cacheaban las respuestas de api.spotify.com).
+export const PRIVATE_CACHES = ['spotify-api', 'tts-audio'];
+
+export async function purgePrivateCaches() {
+  if (typeof caches === 'undefined') return;
+  await Promise.all(PRIVATE_CACHES.map((name) => caches.delete(name).catch(() => false)));
+}
+
 export function logout() {
+  sessionGen += 1;
+  pending.forEach((c) => c.abort());
+  pending.clear();
+  refreshPromise = null;
   ['sp_token', 'sp_refresh', 'sp_expires', 'sp_verifier'].forEach((k) => localStorage.removeItem(k));
+  return purgePrivateCaches();
 }
 
 // ---------- Fetch con reintento de token ----------
-async function apiFetch(path, options = {}) {
-  let token = getStoredToken() || (await refreshToken());
-  if (!token) throw new Error('NO_TOKEN');
-  const res = await fetch(`${API}${path}`, {
+// Máximo UNA renovación y UN reintento por petición ante 401, y un
+// reintento ante 429 respetando Retry-After (si es razonable).
+async function apiFetch(path, options = {}, attempt = { auth: false, rate: false }) {
+  const gen = sessionGen;
+  const token = await getAccessToken();
+  if (!token || gen !== sessionGen) throw new Error('NO_TOKEN');
+  const res = await trackedFetch(`${API}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -139,17 +184,27 @@ async function apiFetch(path, options = {}) {
       ...options.headers
     }
   });
+  if (gen !== sessionGen) throw new Error('NO_TOKEN');
   if (res.status === 401) {
-    token = await refreshToken();
-    if (!token) throw new Error('NO_TOKEN');
-    return apiFetch(path, options);
+    if (attempt.auth) throw new Error('UNAUTHORIZED');
+    const fresh = await refreshToken();
+    if (!fresh) throw new Error('NO_TOKEN');
+    return apiFetch(path, options, { ...attempt, auth: true });
+  }
+  if (res.status === 429 && !attempt.rate) {
+    const wait = Number(res.headers.get('Retry-After') || 1);
+    if (wait <= 5) {
+      await new Promise((r) => setTimeout(r, wait * 1000));
+      return apiFetch(path, options, { ...attempt, rate: true });
+    }
   }
   if (res.status === 204) return null;
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Spotify ${res.status}: ${body}`);
   }
-  return res.json();
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
 // ---------- Datos del usuario ----------

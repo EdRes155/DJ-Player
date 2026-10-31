@@ -16,6 +16,30 @@ O conecta el repo de GitHub en vercel.com (como hiciste con tu bot de Mercado Li
 
 > Spotify exige HTTPS en producción; Vercel ya lo incluye.
 
+### Activar la voz de ElevenLabs
+
+1. En ElevenLabs → Developers → API Keys crea una key nueva. Restríngela al
+   permiso **Text to Speech** y fija un límite de créditos.
+2. En Voice Library elige una voz en español y copia su **Voice ID**.
+3. En Vercel → Settings → Environment Variables (Production y Preview) agrega,
+   **sin** prefijo `VITE_`:
+   - `ELEVENLABS_API_KEY` (márcala como *Sensitive*)
+   - `ELEVENLABS_VOICE_ID`
+   - `ELEVENLABS_MODEL_ID` *(opcional: `eleven_multilingual_v2`, `eleven_v3`, `eleven_flash_v2_5`)*
+   - `ALLOWED_SPOTIFY_USERS` con tu id de usuario de Spotify
+4. Cambia `VITE_TTS_PROVIDER` a `auto` y redeploya.
+
+¿No sabes tu id de Spotify? Deja `ALLOWED_SPOTIFY_USERS` con cualquier valor,
+inicia una sesión DJ y abre la consola del navegador: el aviso
+`[ElevenLabs] Tu usuario de Spotify (...)` muestra el id a agregar.
+
+**Nunca** crees una variable `VITE_ELEVENLABS_API_KEY`: todo lo que empieza por
+`VITE_` queda publicado en el JavaScript de la web. Si alguna vez lo hiciste,
+revoca esa key en ElevenLabs.
+
+**Electron:** compila con `VITE_TTS_ENDPOINT=https://TU-APP.vercel.app/api/tts`
+y agrega el origen de la app a `TTS_ALLOWED_ORIGINS` si el navegador lo exige.
+
 ## 2. Instalar como PWA
 
 **Android (Chrome):** abre la URL → menú ⋮ → "Agregar a pantalla de inicio" / "Instalar app".
@@ -46,7 +70,8 @@ El instalador NSIS queda en `release/`. Si Windows SmartScreen lo bloquea (app s
 |---|---|---|
 | "Se requiere Premium" | Cuenta gratuita | El SDK/control de reproducción exige Premium |
 | Login redirige y no pasa nada | Redirect URI no coincide | Debe ser EXACTA en el dashboard (incluye `/callback`) |
-| No suena la voz del DJ | AudioContext bloqueado | La sesión debe iniciarse con un toque del usuario (ya implementado); revisa la API key de ElevenLabs |
+| No suena la voz del DJ | AudioContext bloqueado | La sesión debe iniciarse con un toque del usuario (ya implementado) |
+| Suena la voz del navegador en lugar de ElevenLabs | `/api/tts` respondió error | Revisa en Vercel → Logs la función `api/tts`: `tts_not_configured`, `user_not_allowed` o `tts_upstream_error` (key/voz inválida o sin créditos) |
 | iPad: "Abre Spotify en algún dispositivo" | No hay dispositivo Connect activo | Abre la app de Spotify y reproduce cualquier cosa 1 s |
 | Volumen "a saltos" en iPad | Connect API no tiene rampas nativas | Normal: son 12 pasos por rampa; en escritorio es suave |
 | 403 en /audio-features | App nueva sin acceso legacy | Esperado: el engine ya funciona sin ese endpoint |

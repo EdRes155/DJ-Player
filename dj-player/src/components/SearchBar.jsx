@@ -13,7 +13,7 @@ function ResultRow({ image, title, subtitle, onPlay, onAdd, busy }) {
           <span className="block text-xs text-mist truncate">{subtitle}</span>
         </div>
         <button type="button" onClick={onPlay} disabled={busy} aria-label={`Reproducir ${title}`}
-                className="w-10 h-10 rounded-full bg-neon hover:bg-neon-deep active:scale-90 transition-all grid place-items-center shrink-0 disabled:opacity-40">
+                className="w-10 h-10 rounded-full bg-neon-deep hover:bg-neon-darker active:scale-90 transition-all grid place-items-center shrink-0 disabled:opacity-40">
           ▶
         </button>
         <button type="button" onClick={onAdd} disabled={busy} aria-label={`Agregar ${title} a la cola`}
@@ -39,7 +39,9 @@ export default function SearchBar({ onPlayTracks, onAddTracks, disabled }) {
   const [albums, setAlbums] = useState([]);
   const [artists, setArtists] = useState([]);
   const [toast, setToast] = useState('');
+  const [searchError, setSearchError] = useState('');
   const toastTimer = useRef(null);
+  const requestId = useRef(0);   // solo la búsqueda más reciente escribe resultados
 
   const showToast = (msg) => {
     setToast(msg);
@@ -48,20 +50,27 @@ export default function SearchBar({ onPlayTracks, onAddTracks, disabled }) {
   };
 
   const runSearch = async () => {
-    if (!query.trim()) return;
+    const q = query.trim();
+    if (!q) return;
+    const id = ++requestId.current;
     setLoading(true);
     setOpen(true);
+    setSearchError('');
     try {
       const [t, a, ar] = await Promise.all([
-        searchTracks(query, 6),
-        searchAlbums(query, 4),
-        searchArtists(query, 4)
+        searchTracks(q, 6),
+        searchAlbums(q, 4),
+        searchArtists(q, 4)
       ]);
+      if (id !== requestId.current) return; // llegó tarde: ya hay otra búsqueda
       setTracks(t); setAlbums(a); setArtists(ar);
     } catch (err) {
+      if (id !== requestId.current) return;
       console.error('[Search] error:', err);
+      setTracks([]); setAlbums([]); setArtists([]);
+      setSearchError('No pude buscar en Spotify. Revisa tu conexión e inténtalo otra vez.');
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   };
 
@@ -74,7 +83,10 @@ export default function SearchBar({ onPlayTracks, onAddTracks, disabled }) {
     try {
       const list = await resolver();
       if (list.length) { onPlayTracks(list); setOpen(false); }
-    } catch (err) { console.error('[Search] play error:', err); }
+    } catch (err) {
+      console.error('[Search] play error:', err);
+      showToast('No pude cargar esas canciones');
+    }
     finally { setBusy(false); }
   };
 
@@ -83,7 +95,10 @@ export default function SearchBar({ onPlayTracks, onAddTracks, disabled }) {
     try {
       const list = await resolver();
       if (list.length) { onAddTracks(list); showToast(`＋ ${label} en la cola`); }
-    } catch (err) { console.error('[Search] add error:', err); }
+    } catch (err) {
+      console.error('[Search] add error:', err);
+      showToast('No pude agregar eso a la cola');
+    }
     finally { setBusy(false); }
   };
 
@@ -91,25 +106,27 @@ export default function SearchBar({ onPlayTracks, onAddTracks, disabled }) {
     <section className="px-6 mb-4 relative">
       <div className="flex gap-2">
         <input
-          type="text" value={query} disabled={disabled}
+          type="search" value={query} disabled={disabled}
+          aria-label="Buscar canción, artista o álbum"
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && runSearch()}
           placeholder="Buscar canción, artista o álbum…"
-          className="flex-1 bg-panel border border-line rounded-2xl px-4 py-3 min-h-[50px]
+          className="flex-1 min-w-0 bg-panel border border-line rounded-2xl px-4 py-3 min-h-[50px]
                      text-white placeholder:text-mist transition-colors focus:border-neon-soft
                      focus-visible:outline focus-visible:outline-2 focus-visible:outline-neon-soft disabled:opacity-40"
         />
-        <button type="button" onClick={runSearch} disabled={disabled} className="btn-primary w-14" aria-label="Buscar">
+        <button type="button" onClick={runSearch} disabled={disabled} className="btn-primary w-14 shrink-0 !px-0" aria-label="Buscar">
           🔍
         </button>
       </div>
 
-      {toast && (
-        <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-20 bg-neon text-white
-                        text-sm font-medium rounded-full px-4 py-2 shadow-lg animate-fadein">
-          {toast}
-        </div>
-      )}
+      <div role="status" aria-live="polite" className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-20">
+        {toast && (
+          <div className="bg-neon-deep text-white text-sm font-medium rounded-full px-4 py-2 shadow-lg animate-fadein w-max max-w-[80vw] text-center">
+            {toast}
+          </div>
+        )}
+      </div>
 
       {open && (
         <div className="mt-3 bg-panel border border-line rounded-2xl p-3 max-h-96 overflow-y-auto animate-fadein">
@@ -117,11 +134,16 @@ export default function SearchBar({ onPlayTracks, onAddTracks, disabled }) {
             <span className="font-mono text-[10px] uppercase tracking-widest text-mist">
               ▶ reproducir ya · ＋ agregar a la cola
             </span>
-            <button type="button" onClick={() => setOpen(false)} className="text-mist text-sm hover:text-white transition-colors">✕</button>
+            <button type="button" onClick={() => setOpen(false)} aria-label="Cerrar resultados"
+                    className="text-mist text-sm hover:text-white transition-colors">✕</button>
           </div>
 
+          {!loading && searchError && (
+            <p role="alert" className="text-sm py-4 text-center text-red-300">{searchError}</p>
+          )}
+
           {loading && (
-            <div className="py-6 flex justify-center gap-1 h-12 items-end">
+            <div role="status" aria-label="Buscando" className="py-6 flex justify-center gap-1 h-12 items-end">
               <span className="eq-bar h-8" /><span className="eq-bar h-8" />
               <span className="eq-bar h-8" /><span className="eq-bar h-8" />
             </div>
@@ -173,8 +195,8 @@ export default function SearchBar({ onPlayTracks, onAddTracks, disabled }) {
             </>
           )}
 
-          {!loading && !tracks.length && !albums.length && !artists.length && (
-            <p className="text-mist text-sm py-4 text-center">Sin resultados para "{query}"</p>
+          {!loading && !searchError && !tracks.length && !albums.length && !artists.length && (
+            <p className="text-mist text-sm py-4 text-center">Sin resultados para «{query}»</p>
           )}
         </div>
       )}
