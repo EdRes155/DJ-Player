@@ -222,14 +222,16 @@ export const getRecentlyPlayed = (limit = 50) =>
   apiFetch(`/me/player/recently-played?limit=${limit}`).then((d) => d.items.map((i) => i.track));
 export const getArtists = (ids) =>
   apiFetch(`/artists?ids=${ids.slice(0, 50).join(',')}`).then((d) => d.artists);
-export const searchTracks = (query, limit = 20) =>
-  apiFetch(`/search?type=track&limit=${limit}&q=${encodeURIComponent(query)}`)
-    .then((d) => d.tracks.items);
-export const searchAlbums = (query, limit = 12) =>
-  apiFetch(`/search?type=album&limit=${limit}&q=${encodeURIComponent(query)}`)
+// Spotify acepta como máximo 10 resultados por búsqueda en apps en modo desarrollo
+const SEARCH_MAX = 10;
+export const searchTracks = (query, limit = SEARCH_MAX, offset = 0) =>
+  apiFetch(`/search?type=track&limit=${Math.min(limit, SEARCH_MAX)}&offset=${offset}&q=${encodeURIComponent(query)}`)
+    .then((d) => d.tracks?.items?.filter(Boolean) || []);
+export const searchAlbums = (query, limit = 6) =>
+  apiFetch(`/search?type=album&limit=${Math.min(limit, SEARCH_MAX)}&q=${encodeURIComponent(query)}`)
     .then((d) => d.albums.items);
 export const searchArtists = (query, limit = 6) =>
-  apiFetch(`/search?type=artist&limit=${limit}&q=${encodeURIComponent(query)}`)
+  apiFetch(`/search?type=artist&limit=${Math.min(limit, SEARCH_MAX)}&q=${encodeURIComponent(query)}`)
     .then((d) => d.artists.items);
 export const getArtistTopTracks = (artistId) =>
   apiFetch(`/artists/${artistId}/top-tracks?market=from_token`).then((d) => d.tracks);

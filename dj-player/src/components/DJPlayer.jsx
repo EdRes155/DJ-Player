@@ -13,10 +13,10 @@ import {
 import { generateDJScript } from '../services/djScript.js';
 import { buildTasteProfile } from '../services/tasteProfile.js';
 import { prepareDJVoice, stopAnyVoice } from '../services/voice.js';
-import { getAudioContext, performTransition } from '../services/audioMixer.js';
+import { getAudioContext, performTransition, transitionLeadMs } from '../services/audioMixer.js';
 
-const TRANSITION_LEAD_MS = 4000;   // inicia la transición 4 s antes del final
-const PREPARE_LEAD_MS = 20000;     // prepara guion + voz 20 s antes
+const TRANSITION_LEAD_MS = 4000;   // sin voz lista: transición 4 s antes del final
+const PREPARE_LEAD_MS = 45000;     // prepara guion + voz 45 s antes (el DJ habla sobre el cierre)
 const TIME_RANGES = ['short_term', 'medium_term', 'long_term'];
 const SPOTIFY_BLOCK = 50;          // canciones que se mandan a Spotify por bloque
 
@@ -58,7 +58,11 @@ export default function DJPlayer({ platform, onLogout }) {
     setLoading(true);
     setError('');
     try {
-      let base;
+      const dedup = (list) => {
+        const seen = new Set();
+        return list.filter((t) => t && t.uri && !seen.has(t.id) && seen.add(t.id));
+      };
+      let analyzed;
       if (vibeId === 'auto') {
         // Variedad: rango de tiempo aleatorio + recién escuchadas, todo barajado
         const range = TIME_RANGES[Math.floor(Math.random() * TIME_RANGES.length)];
@@ -66,32 +70,41 @@ export default function DJPlayer({ platform, onLogout }) {
           getTopTracks(range, 50).catch(() => []),
           getRecentlyPlayed(30).catch(() => [])
         ]);
-        base = shuffle([...top, ...recent]);
+        let base = dedup(shuffle([...top, ...recent]));
+        if (!base.length) {
+          const pls = await getPlaylists(5);
+          if (pls.items?.length) base = await getPlaylistTracks(pls.items[0].id);
+        }
+        if (!base.length) throw new Error('No encontré música en tu cuenta.');
+        analyzed = await analyzeTracks(base);
       } else {
-        // Vibra específica: set REAL construido por búsqueda (funciona sin géneros)
-        const vibeTracks = await buildVibeSet(vibeId, { limit: 30 });
-        const mine = shuffle(await getTopTracks('medium_term', 30).catch(() => [])).slice(0, 8);
-        base = shuffle([...vibeTracks, ...mine]);
+        // Vibra específica: el set sale del catálogo de esa vibra. De tu
+        // música solo entran canciones cuyo género CONFIRMA la vibra.
+        const [vibeTracks, top] = await Promise.all([
+          buildVibeSet(vibeId, { limit: 40 }),
+          getTopTracks('medium_term', 50).catch(() => [])
+        ]);
+        const [vibeAnalyzed, mineAnalyzed] = await Promise.all([
+          analyzeTracks(dedup(vibeTracks)),
+          analyzeTracks(dedup(top))
+        ]);
+        const vibeOk = filterByVibe(vibeAnalyzed, vibeId);
+        const mine = shuffle(filterByVibe(mineAnalyzed, vibeId, { strict: true })).slice(0, 8);
+        // Si el filtro por género dejó muy poco, confiamos en la búsqueda
+        const pool = vibeOk.length >= 12 ? vibeOk : vibeAnalyzed;
+        const vibeIds = new Set(pool.map((t) => t.id));
+        analyzed = shuffle([...pool, ...mine.filter((t) => !vibeIds.has(t.id))]);
+        if (!analyzed.length) throw new Error('No encontré canciones para esa vibra. Prueba otra vez.');
       }
-
-      // Dedup por id
-      const seen = new Set();
-      base = base.filter((t) => t && t.uri && !seen.has(t.id) && seen.add(t.id));
-
-      if (!base.length) {
-        const pls = await getPlaylists(5);
-        if (pls.items?.length) base = await getPlaylistTracks(pls.items[0].id);
-      }
-      if (!base.length) throw new Error('No encontré música en tu cuenta.');
-
-      let analyzed = await analyzeTracks(base);
-      if (vibeId === 'auto') analyzed = filterByVibe(analyzed, vibeId);
       let ordered = reorderQueue(analyzed);
 
       // Descubrimientos: 1 de cada 3 canciones
       if (useRecs) {
         const recs = await getRecommendations({ vibeId, limit: 8, profile: profileRef.current });
-        const analyzedRecs = (await analyzeTracks(recs)).map((t) => ({ ...t, isRecommendation: true }));
+        const inQueue = new Set(ordered.map((t) => t.id));
+        // Los descubrimientos también deben respetar la vibra
+        const analyzedRecs = filterByVibe(await analyzeTracks(recs.filter((t) => !inQueue.has(t.id))), vibeId)
+          .map((t) => ({ ...t, isRecommendation: true }));
         const mixed = [];
         ordered.forEach((t, i) => {
           mixed.push(t);
@@ -130,6 +143,10 @@ export default function DJPlayer({ platform, onLogout }) {
     if (voice.provider !== 'none') {
       try {
         await setVolume(0.35);
+        // Al arrancar una pista el móvil reasigna el audio (la app de
+        // Spotify toma el foco); esperamos a que se asiente para no cortar la voz
+        await new Promise((r) => setTimeout(r, 1500));
+        if (gen !== sessionGenRef.current) return;
         setDjTalking(true);
         await voice.speak();
       } finally {
@@ -205,9 +222,15 @@ export default function DJPlayer({ platform, onLogout }) {
       // al agotar el bloque, cargamos un bloque nuevo desde el destino.
       const isJustNext = targetIdx === indexRef.current + 1;
       const inBlock = targetIdx >= sentRef.current.start && targetIdx < sentRef.current.end;
-      const playNext = isJustNext && inBlock
-        ? () => next()
-        : () => sendBlock(q, targetIdx);
+      const playNext = async () => {
+        // Si la canción terminó mientras el DJ hablaba, Spotify ya avanzó solo
+        if (isJustNext) {
+          const s = await getPosition().catch(() => null);
+          if (s?.trackUri && s.trackUri === nextTrack.uri) return;
+        }
+        if (isJustNext && inBlock) await next();
+        else await sendBlock(q, targetIdx);
+      };
       await performTransition({ setVolume, playNext, voice, isActive });
     } catch (err) {
       console.error('[DJ] Falló la transición, saltando directo:', err);
@@ -223,7 +246,7 @@ export default function DJPlayer({ platform, onLogout }) {
         transitioningRef.current = false;
       }
     }
-  }, [next, sendBlock, setVolume]);
+  }, [next, sendBlock, setVolume, getPosition]);
 
   // Siguiente canción = transición al índice que sigue
   const performNextTransition = useCallback(
@@ -300,8 +323,13 @@ export default function DJPlayer({ platform, onLogout }) {
         const script = await generateDJScript(upcoming, transition, { isRecommendation: !!upcoming.isRecommendation, profile: profileRef.current });
         const voice = await prepareDJVoice(script);
         if (preparedRef.current?.forIndex === idx + 1) preparedRef.current.voice = voice;
+        return; // la posición ya cambió; el siguiente tick decide
       }
-      if (remaining < TRANSITION_LEAD_MS && gen === sessionGenRef.current) performNextTransition();
+      // Con la voz lista, la transición empieza con tiempo para que el DJ
+      // hable sobre el cierre de esta canción (según lo que dura la voz)
+      const ready = preparedRef.current?.forIndex === idx + 1 ? preparedRef.current.voice : null;
+      const lead = ready ? transitionLeadMs(ready) : TRANSITION_LEAD_MS;
+      if (remaining < lead && gen === sessionGenRef.current) performNextTransition();
     }, 1000);
     return () => clearInterval(interval);
   }, [sessionOn, getPosition, performNextTransition]);
