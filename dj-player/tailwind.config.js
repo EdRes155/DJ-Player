@@ -7,7 +7,8 @@ export default {
         ink: '#0a0a0f',
         panel: '#141419',
         line: '#26262e',
-        neon: { DEFAULT: '#a855f7', soft: '#c084fc', deep: '#7c3aed' },
+        // DEFAULT = acentos sobre fondo oscuro; deep/darker = fondos con texto blanco (≥ 4.5:1)
+        neon: { DEFAULT: '#a855f7', soft: '#c084fc', deep: '#7c3aed', darker: '#6d28d9' },
         mist: '#9b9ba6'
       },
       fontFamily: {

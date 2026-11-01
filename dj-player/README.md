@@ -37,8 +37,11 @@ npm run dev               # http://localhost:5173
 |---|---|
 | `VITE_SPOTIFY_CLIENT_ID` | [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) → Create app. Agrega `http://localhost:5173/callback` como Redirect URI y activa **Web Playback SDK** + **Web API** |
 | `VITE_SPOTIFY_REDIRECT_URI` | `http://localhost:5173/callback` en dev |
-| `VITE_ELEVENLABS_API_KEY` | [elevenlabs.io](https://elevenlabs.io) → Profile → API Keys (plan gratis alcanza para probar) |
-| `VITE_ELEVENLABS_VOICE_ID` | Voice Library → elige una voz conversational en español → copia el ID |
+| `ELEVENLABS_API_KEY` | **Solo servidor** (sin `VITE_`). [elevenlabs.io](https://elevenlabs.io) → Developers → API Keys |
+| `ELEVENLABS_VOICE_ID` | **Solo servidor**. Voice Library → voz en español → copia el ID |
+| `ELEVENLABS_MODEL_ID` | *(opcional)* `eleven_multilingual_v2` (por defecto), `eleven_v3` o `eleven_flash_v2_5` |
+| `ALLOWED_SPOTIFY_USERS` | **Solo servidor**. Ids de Spotify que pueden usar la voz premium |
+| `VITE_TTS_PROVIDER` | `auto` (ElevenLabs y si falla voz del navegador), `local` o `elevenlabs` |
 | `VITE_LLM_API_URL` | *(opcional)* endpoint propio que genere guiones DJ con un LLM; vacío = plantillas locales |
 
 ## Scripts
@@ -47,6 +50,8 @@ npm run dev               # http://localhost:5173
 npm run dev              # desarrollo web
 npm run build            # build de producción (PWA incluida)
 npm run preview          # previsualizar el build
+npm run lint             # ESLint (React + hooks)
+npm test                 # pruebas de regresión (Vitest)
 npm run electron:dev     # desarrollo con ventana de Electron
 npm run build:electron   # genera el .exe en /release
 ```
@@ -54,13 +59,15 @@ npm run build:electron   # genera el .exe en /release
 ## Estructura
 
 ```
+api/
+└── tts.js             # función serverless: ElevenLabs con la key en el servidor
 src/
 ├── components/        # DJPlayer, NowPlaying, Queue, GenreSelector, AuthSpotify
 ├── hooks/
 │   └── useSpotifyPlayer.js   # SDK (escritorio) + Connect (iPad/fallback)
 └── services/
     ├── spotifyAPI.js         # OAuth PKCE + datos + control de reproducción
-    ├── elevenLabsAPI.js      # TTS con cache
+    ├── elevenLabsAPI.js      # cliente de /api/tts (voz premium) con cache
     ├── audioMixer.js         # rampas de volumen + voz encima
     ├── djEngine.js           # energía, arco del set, recomendaciones
     └── djScript.js           # guiones coherentes del DJ
@@ -76,5 +83,13 @@ t = duración - 4 s:
   3. La voz del DJ presenta la canción encima del intro
   4. Fade in a volumen normal (2 s)
 ```
+
+## Voz premium con ElevenLabs
+
+La clave de ElevenLabs **nunca** se envía al navegador. La app llama a
+`/api/tts` (función de Vercel) con el token de Spotify del usuario; el
+servidor verifica el token, comprueba que el usuario esté en
+`ALLOWED_SPOTIFY_USERS`, limita longitud y frecuencia, y solo entonces
+llama a ElevenLabs. Si algo falla, el DJ usa la voz del navegador.
 
 Consulta `DEPLOYMENT.md` para deploy en Vercel, instalación como PWA y compilación del .exe.

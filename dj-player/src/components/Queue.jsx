@@ -8,7 +8,7 @@ export default function Queue({ tracks, currentIndex, onJump, jumping }) {
     <section className="mt-8 px-6">
       <div className="flex items-baseline justify-between mb-3">
         <h3 className="font-mono text-xs uppercase tracking-widest text-mist">A continuación</h3>
-        <span className="text-[10px] text-mist/70">toca una para adelantar</span>
+        <span className="text-[10px] text-mist">toca una para adelantar</span>
       </div>
       <ul className="flex gap-3 overflow-x-auto pb-3 -mx-6 px-6 snap-x scroll-smooth">
         {upcoming.map((t, i) => {
@@ -27,7 +27,7 @@ export default function Queue({ tracks, currentIndex, onJump, jumping }) {
                   <span className="absolute inset-0 rounded-2xl grid place-items-center
                                    bg-ink/0 group-hover:bg-ink/50 transition-colors">
                     <span className="opacity-0 group-hover:opacity-100 transition-opacity
-                                     w-11 h-11 rounded-full bg-neon grid place-items-center text-white">▶</span>
+                                     w-11 h-11 rounded-full bg-neon-deep grid place-items-center text-white">▶</span>
                   </span>
                   <span className="absolute top-1.5 left-1.5 bg-ink/80 backdrop-blur rounded-full
                                    px-2 py-0.5 font-mono text-[10px] text-mist">

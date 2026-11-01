@@ -5,7 +5,7 @@ import Queue from './Queue.jsx';
 import GenreSelector from './GenreSelector.jsx';
 import SearchBar from './SearchBar.jsx';
 import { useSpotifyPlayer } from '../hooks/useSpotifyPlayer.js';
-import { getTopTracks, getRecentlyPlayed, getPlaylists, getPlaylistTracks, addToPlaybackQueue, logout } from '../services/spotifyAPI.js';
+import { getTopTracks, getRecentlyPlayed, getPlaylists, getPlaylistTracks, logout } from '../services/spotifyAPI.js';
 import {
   analyzeTracks, reorderQueue, calculateTransition, getRecommendations,
   filterByVibe, buildVibeSet, shuffle
@@ -18,9 +18,13 @@ import { getAudioContext, performTransition } from '../services/audioMixer.js';
 const TRANSITION_LEAD_MS = 4000;   // inicia la transición 4 s antes del final
 const PREPARE_LEAD_MS = 20000;     // prepara guion + voz 20 s antes
 const TIME_RANGES = ['short_term', 'medium_term', 'long_term'];
+const SPOTIFY_BLOCK = 50;          // canciones que se mandan a Spotify por bloque
 
 export default function DJPlayer({ platform, onLogout }) {
-  const { ready, mode, playerState, play, togglePlay, setVolume, getPosition, next, retryConnect } = useSpotifyPlayer();
+  const {
+    ready, mode, connectStatus, playerError, playerState,
+    play, togglePlay, pausePlayback, setVolume, getPosition, next, retryConnect
+  } = useSpotifyPlayer();
 
   const [queue, setQueue] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
@@ -36,8 +40,18 @@ export default function DJPlayer({ platform, onLogout }) {
   const transitioningRef = useRef(false);
   const queueRef = useRef([]);
   const indexRef = useRef(-1);
+  const sentRef = useRef({ start: 0, end: 0 });   // bloque [start, end) cargado en Spotify
+  const sessionGenRef = useRef(0);                 // invalida tareas de una sesión terminada
   queueRef.current = queue;
   indexRef.current = currentIndex;
+
+  // Manda a Spotify el bloque de la cola que empieza en `start`. Si la app
+  // se duerme, la música continúa sola hasta el final de ese bloque.
+  const sendBlock = useCallback(async (q, start) => {
+    const end = Math.min(q.length, start + SPOTIFY_BLOCK);
+    await play(q.slice(start, end).map((t) => t.uri));
+    sentRef.current = { start, end };
+  }, [play]);
 
   // ---------- Construcción del set ----------
   const buildSet = useCallback(async () => {
@@ -97,24 +111,34 @@ export default function DJPlayer({ platform, onLogout }) {
   }, [vibeId, useRecs]);
 
   // ---------- Reproducir la primera + voz de apertura ----------
-  const kickoff = useCallback(async (set) => {
-    const first = set[0];
+  const kickoff = useCallback(async (set, startIdx = 0) => {
+    // Un set nuevo invalida transiciones y voces de la sesión anterior
+    const gen = ++sessionGenRef.current;
+    transitioningRef.current = false;
+    stopAnyVoice();
+    const first = set[startIdx];
     const script = await generateDJScript(first, null, { isFirst: true, isRecommendation: !!first.isRecommendation, profile: profileRef.current });
     const voice = await prepareDJVoice(script);
+    if (gen !== sessionGenRef.current) return;
 
-    // Mandamos toda la lista a Spotify: si la app se duerme, la música continúa sola
-    await play(set.slice(0, 50).map((t) => t.uri));
-    setCurrentIndex(0);
+    await sendBlock(set, startIdx);
+    preparedRef.current = null;
+    indexRef.current = startIdx;
+    setCurrentIndex(startIdx);
     setSessionOn(true);
 
     if (voice.provider !== 'none') {
-      await setVolume(0.35);
-      setDjTalking(true);
-      await voice.speak();
-      setDjTalking(false);
-      await setVolume(1.0);
+      try {
+        await setVolume(0.35);
+        setDjTalking(true);
+        await voice.speak();
+      } finally {
+        // Pase lo que pase con la voz, la música vuelve a su volumen
+        setDjTalking(false);
+        if (gen === sessionGenRef.current) await setVolume(1.0).catch(() => {});
+      }
     }
-  }, [play, setVolume]);
+  }, [sendBlock, setVolume]);
 
   // ---------- Iniciar sesión DJ (desde el set armado) ----------
   const startSession = useCallback(async () => {
@@ -161,6 +185,8 @@ export default function DJPlayer({ platform, onLogout }) {
     const q = queueRef.current;
     if (targetIdx < 0 || targetIdx >= q.length) { setSessionOn(false); return; }
     transitioningRef.current = true;
+    const gen = sessionGenRef.current;
+    const isActive = () => gen === sessionGenRef.current;
 
     const current = indexRef.current >= 0 ? q[indexRef.current] : null;
     const nextTrack = q[targetIdx];
@@ -172,25 +198,32 @@ export default function DJPlayer({ platform, onLogout }) {
         const script = await generateDJScript(nextTrack, transition, { isRecommendation: !!nextTrack.isRecommendation, profile: profileRef.current });
         voice = await prepareDJVoice(script);
       }
+      if (!isActive()) return;
       setDjTalking(voice.provider !== 'none');
-      // Si es la siguiente en la lista nativa de Spotify, un skip basta
-      // (así la lista nativa sigue alineada). Para saltos lejanos,
-      // reenviamos la lista desde el destino.
+      // Si es la siguiente y ya está en el bloque cargado en Spotify, un
+      // skip basta (la lista nativa sigue alineada). Para saltos lejanos o
+      // al agotar el bloque, cargamos un bloque nuevo desde el destino.
       const isJustNext = targetIdx === indexRef.current + 1;
-      const playNext = isJustNext
+      const inBlock = targetIdx >= sentRef.current.start && targetIdx < sentRef.current.end;
+      const playNext = isJustNext && inBlock
         ? () => next()
-        : () => play(q.slice(targetIdx, targetIdx + 50).map((t) => t.uri));
-      await performTransition({ setVolume, playNext, voice });
+        : () => sendBlock(q, targetIdx);
+      await performTransition({ setVolume, playNext, voice, isActive });
     } catch (err) {
       console.error('[DJ] Falló la transición, saltando directo:', err);
-      try { await play([nextTrack.uri]); await setVolume(1.0); } catch { /* silencioso */ }
+      if (isActive()) {
+        try { await sendBlock(q, targetIdx); await setVolume(1.0); } catch { /* silencioso */ }
+      }
     } finally {
-      setDjTalking(false);
-      setCurrentIndex(targetIdx);
-      preparedRef.current = null;
-      transitioningRef.current = false;
+      if (isActive()) {
+        setDjTalking(false);
+        indexRef.current = targetIdx;
+        setCurrentIndex(targetIdx);
+        preparedRef.current = null;
+        transitioningRef.current = false;
+      }
     }
-  }, [play, next, setVolume]);
+  }, [next, sendBlock, setVolume]);
 
   // Siguiente canción = transición al índice que sigue
   const performNextTransition = useCallback(
@@ -208,11 +241,7 @@ export default function DJPlayer({ platform, onLogout }) {
       const q = queueRef.current;
       if (!q[targetIdx]) return;
       try {
-        await kickoff(q.slice(targetIdx));
-        // kickoff pone index 0 sobre el slice; reponemos la cola completa y el índice real
-        setQueue(q);
-        queueRef.current = q;
-        setCurrentIndex(targetIdx);
+        await kickoff(q, targetIdx);
       } catch (err) {
         console.error('[DJ] No pude iniciar desde esa canción:', err);
         setError('No pude reproducir esa canción. ¿Hay un dispositivo activo?');
@@ -221,35 +250,44 @@ export default function DJPlayer({ platform, onLogout }) {
   }, [sessionOn, transitionToIndex, kickoff]);
 
   // ---------- Agregar canciones a la cola SIN reiniciar la sesión ----------
+  // No usamos la cola nativa de Spotify (/me/player/queue): esas canciones
+  // suenan ANTES del resto de la lista y desalinean al DJ. Las nuevas se
+  // cargan en Spotify cuando la transición llega al final del bloque actual.
   const addToQueue = useCallback(async (picked) => {
     try {
       const analyzed = await analyzeTracks(picked);
-      let freshAdded = [];
-      setQueue((prev) => {
-        const existing = new Set(prev.map((t) => t.id));
-        freshAdded = analyzed.filter((t) => !existing.has(t.id));
-        const merged = [...prev, ...freshAdded];
-        queueRef.current = merged;
-        return merged;
-      });
-      // Respaldo: también a la cola nativa de Spotify (si la app se duerme,
-      // Spotify seguirá con estas canciones aunque sin voz del DJ)
-      if (sessionOn) {
-        for (const t of freshAdded) {
-          try { await addToPlaybackQueue(t.uri); } catch { /* mejor esfuerzo */ }
-        }
-      }
+      const existing = new Set(queueRef.current.map((t) => t.id));
+      const fresh = analyzed.filter((t) => !existing.has(t.id));
+      if (!fresh.length) return;
+      const merged = [...queueRef.current, ...fresh];
+      queueRef.current = merged;
+      setQueue(merged);
     } catch (err) {
       console.error('[DJ] Error agregando a la cola:', err);
     }
-  }, [sessionOn]);
+  }, []);
+
+  // ---------- Terminar la sesión DJ (sin cerrar la sesión de Spotify) ----------
+  const endSession = useCallback(async () => {
+    sessionGenRef.current += 1;      // cancela transiciones y voces en curso
+    stopAnyVoice();
+    preparedRef.current = null;
+    transitioningRef.current = false;
+    sentRef.current = { start: 0, end: 0 };
+    setDjTalking(false);
+    setSessionOn(false);
+    setCurrentIndex(-1);
+    try { await pausePlayback(); } catch { /* mejor esfuerzo */ }
+    try { await setVolume(1.0); } catch { /* mejor esfuerzo */ }
+  }, [pausePlayback, setVolume]);
 
   // Vigila la posición: prepara la voz y dispara la transición
   useEffect(() => {
     if (!sessionOn) return undefined;
+    const gen = sessionGenRef.current;
     const interval = setInterval(async () => {
-      if (transitioningRef.current) return;
-      const s = await getPosition();
+      if (transitioningRef.current || gen !== sessionGenRef.current) return;
+      const s = await getPosition().catch(() => null);
       if (!s || s.paused || !s.duration) return;
       const remaining = s.duration - s.position;
       const idx = indexRef.current;
@@ -263,7 +301,7 @@ export default function DJPlayer({ platform, onLogout }) {
         const voice = await prepareDJVoice(script);
         if (preparedRef.current?.forIndex === idx + 1) preparedRef.current.voice = voice;
       }
-      if (remaining < TRANSITION_LEAD_MS) performNextTransition();
+      if (remaining < TRANSITION_LEAD_MS && gen === sessionGenRef.current) performNextTransition();
     }, 1000);
     return () => clearInterval(interval);
   }, [sessionOn, getPosition, performNextTransition]);
@@ -317,7 +355,10 @@ export default function DJPlayer({ platform, onLogout }) {
     const uri = playerState.trackUri;
     if (!uri) return;
     const q = queueRef.current;
-    const idx = q.findIndex((t) => t.uri === uri);
+    // Primero dentro del bloque cargado en Spotify (puede haber repetidas)
+    const { start, end } = sentRef.current;
+    const inBlock = q.slice(start, end).findIndex((t) => t.uri === uri);
+    const idx = inBlock >= 0 ? start + inBlock : q.findIndex((t) => t.uri === uri);
     if (idx >= 0 && idx !== indexRef.current) {
       preparedRef.current = null; // la voz preparada ya no corresponde
       setCurrentIndex(idx);
@@ -371,10 +412,27 @@ export default function DJPlayer({ platform, onLogout }) {
                   duration={playerState.duration}
                   djTalking={djTalking} />
 
-      {error && (
-        <div className="mx-6 mt-4 rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm">
-          {error}
-          {mode === 'connect' && (
+      {mode === 'connect' && !ready && (
+        <div role="status" className="mx-6 mt-4 rounded-2xl border border-line bg-panel px-4 py-3 text-sm">
+          {connectStatus === 'searching' && <p>Buscando dispositivos de Spotify…</p>}
+          {connectStatus === 'no-device' && (
+            <p>
+              No encontré ningún dispositivo de Spotify. Abre la app de Spotify en este u otro
+              dispositivo y reproduce algo un segundo; lo detecto solo al volver aquí.
+            </p>
+          )}
+          {connectStatus === 'error' && <p>No pude conectar con Spotify. Revisa tu conexión a internet.</p>}
+          <button type="button" onClick={retryConnect} disabled={connectStatus === 'searching'}
+                  className="block mt-2 text-neon-soft underline disabled:opacity-60">
+            Buscar dispositivos otra vez
+          </button>
+        </div>
+      )}
+
+      {(error || playerError) && (
+        <div role="alert" className="mx-6 mt-4 rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm">
+          {error || playerError}
+          {mode === 'connect' && ready && (
             <button type="button" onClick={retryConnect} className="block mt-2 text-neon-soft underline">
               Buscar dispositivos otra vez
             </button>
@@ -386,7 +444,7 @@ export default function DJPlayer({ platform, onLogout }) {
 
       <nav className="fixed bottom-0 inset-x-0 bg-panel/90 backdrop-blur border-t border-line"
            style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 12px)' }}>
-        <div className="max-w-lg lg:max-w-4xl mx-auto flex items-center justify-center gap-4 px-6 pt-3">
+        <div className="max-w-lg lg:max-w-4xl mx-auto flex items-center justify-center gap-3 px-6 pt-3">
           {!sessionOn ? (
             <button type="button" onClick={startSession} disabled={!ready || loading}
                     className="btn-primary flex-1 max-w-xs disabled:opacity-40">
@@ -394,12 +452,17 @@ export default function DJPlayer({ platform, onLogout }) {
             </button>
           ) : (
             <>
-              <button type="button" onClick={togglePlay} className="btn-primary w-24" aria-label="Reproducir o pausar">
+              <button type="button" onClick={togglePlay} className="btn-primary w-20 shrink-0"
+                      aria-label={playerState.paused ? 'Reproducir' : 'Pausar'}>
                 {playerState.paused ? '▶' : '⏸'}
               </button>
-              <button type="button" onClick={performNextTransition} className="btn-ghost w-24"
+              <button type="button" onClick={performNextTransition} className="btn-ghost w-20 shrink-0 !px-2"
                       aria-label="Siguiente con transición DJ">
                 ⏭ DJ
+              </button>
+              <button type="button" onClick={endSession} className="btn-ghost shrink-0 !px-3 text-sm"
+                      aria-label="Terminar sesión DJ">
+                ⏹ Terminar
               </button>
             </>
           )}
