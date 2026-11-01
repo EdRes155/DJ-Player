@@ -239,9 +239,15 @@ export function useSpotifyPlayer() {
   const getPosition = useCallback(async () => {
     if (mode === 'sdk' && playerRef.current) {
       const s = await playerRef.current.getCurrentState();
-      return s ? { position: s.position, duration: s.duration, paused: s.paused } : null;
+      return s ? {
+        position: s.position, duration: s.duration, paused: s.paused,
+        trackUri: s.track_window?.current_track?.uri ?? null
+      } : null;
     }
-    return { position: playerState.position, duration: playerState.duration, paused: playerState.paused };
+    return {
+      position: playerState.position, duration: playerState.duration,
+      paused: playerState.paused, trackUri: playerState.trackUri
+    };
   }, [mode, playerState]);
 
   return {

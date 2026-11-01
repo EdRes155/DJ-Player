@@ -36,14 +36,34 @@ export const VIBE_PRESETS = [
 ];
 
 // Consultas de búsqueda por vibra: construyen un set REAL aunque los
-// géneros del artista den 403. Cada vibra suena claramente distinta.
+// géneros del artista den 403. Mezclan filtros de género de Spotify
+// (genre:"...", más precisos) con palabras clave. Cada vibra suena distinta.
 export const VIBE_SEARCH_QUERIES = {
-  fiesta: ['reggaeton 2024', 'perreo', 'fiesta latina', 'dance hits', 'cumbia sonidera', 'pop latino'],
-  chill: ['lofi chill', 'indie chill español', 'acoustic covers', 'bossa nova', 'chill pop', 'r&b chill'],
-  intenso: ['rock en español', 'rock clásico', 'metal', 'punk rock', 'hard rock', 'rock alternativo'],
-  flow: ['rap español', 'trap latino', 'hip hop clásico', 'r&b', 'freestyle', 'boom bap'],
-  regional: ['corridos tumbados', 'banda mx', 'norteñas', 'cumbia', 'regional mexicano', 'mariachi']
+  fiesta: [
+    'genre:reggaeton', 'genre:"urbano latino"', 'genre:dance', 'genre:edm', 'genre:"latin pop"',
+    'genre:house', 'perreo', 'fiesta latina', 'dance hits', 'cumbia sonidera'
+  ],
+  chill: [
+    'genre:"lo-fi"', 'genre:"chill pop"', 'genre:"bossa nova"', 'genre:acoustic', 'genre:"indie folk"',
+    'genre:"neo soul"', 'lofi chill', 'indie chill español', 'acoustic covers', 'r&b chill'
+  ],
+  intenso: [
+    'genre:rock', 'genre:"hard rock"', 'genre:metal', 'genre:"punk rock"', 'genre:"rock en espanol"',
+    'genre:"alternative rock"', 'rock en español', 'rock clásico', 'rock alternativo'
+  ],
+  flow: [
+    'genre:"hip hop"', 'genre:rap', 'genre:trap', 'genre:"trap latino"', 'genre:"boom bap"',
+    'genre:"rap latina"', 'rap español', 'hip hop clásico', 'freestyle'
+  ],
+  regional: [
+    'genre:"corrido"', 'genre:"corridos tumbados"', 'genre:banda', 'genre:norteno', 'genre:"regional mexican"',
+    'genre:mariachi', 'genre:cumbia', 'corridos tumbados', 'banda mx', 'norteñas'
+  ]
 };
+
+// Spotify limita la búsqueda a 10 resultados por página: pedimos varias
+// consultas con desplazamientos aleatorios para tener variedad.
+const SEARCH_PAGE = 10;
 
 // Fisher-Yates: baraja sin sesgo (para que no salga lo mismo cada vez)
 export function shuffle(arr) {
@@ -63,17 +83,39 @@ export async function buildVibeSet(vibeId, { limit = 30 } = {}) {
   const queries = VIBE_SEARCH_QUERIES[vibeId];
   if (!queries) return [];
   const pool = [];
-  for (const q of shuffle(queries).slice(0, 4)) {
+  const perArtist = {};
+  const add = (t) => {
+    const artist = t?.artists?.[0]?.id;
+    if (!t?.uri || !artist) return;
+    // Máximo 2 por artista: que la vibra no sea un solo cantante
+    perArtist[artist] = (perArtist[artist] || 0) + 1;
+    if (perArtist[artist] <= 2) pool.push(t);
+  };
+  const runs = shuffle(queries).slice(0, 7).map(async (q) => {
+    // Primera página o una más profunda, para no repetir siempre los mismos hits
+    const offset = Math.random() < 0.5 ? 0 : SEARCH_PAGE * (1 + Math.floor(Math.random() * 3));
     try {
-      const found = await searchTracks(`${q}`, 12);
-      pool.push(...found);
+      let found = await searchTracks(q, SEARCH_PAGE, offset);
+      if (!found.length && offset) found = await searchTracks(q, SEARCH_PAGE, 0);
+      return found;
     } catch (err) {
-      console.warn('[DJ Engine] busqueda de vibra fallo:', err.message);
+      console.warn('[DJ Engine] búsqueda de vibra falló:', q, err.message);
+      return [];
     }
-  }
+  });
+  (await Promise.all(runs)).flat().forEach(add);
   const seen = new Set();
-  const unique = pool.filter((t) => t && !seen.has(t.id) && seen.add(t.id));
+  const unique = pool.filter((t) => !seen.has(t.id) && seen.add(t.id));
   return shuffle(unique).slice(0, limit);
+}
+
+/** ¿El track encaja con la vibra? true/false si hay géneros, null si no se sabe. */
+export function matchesVibe(track, vibeId) {
+  const vibe = VIBE_PRESETS.find((v) => v.id === vibeId);
+  if (!vibe?.query) return true;
+  const genres = track.dj?.genres || [];
+  if (!genres.length) return null;
+  return vibe.query.test(genres.join(' '));
 }
 
 /** Enriquece tracks con energia, mood y generos del artista. */
@@ -175,9 +217,11 @@ export async function getRecommendations({ vibeId = 'auto', limit = 15, profile 
     const vibe = VIBE_PRESETS.find((v) => v.id === vibeId);
     const inVibe = (a) => !vibe?.query || vibe.query.test((a.genres || []).join(' '));
 
-    // Semillas: primero tu momento actual (semana), luego los meses
+    // Semillas: primero tu momento actual (semana), luego los meses.
+    // Con una vibra elegida SOLO valen tus artistas de esa vibra; si no
+    // tienes ninguno, los descubrimientos salen de la vibra misma.
     let seeds = [...weekArtists.filter(inVibe), ...monthArtists.filter(inVibe)];
-    if (!seeds.length) seeds = [...weekArtists, ...monthArtists];
+    if (!seeds.length && !vibe?.query) seeds = [...weekArtists, ...monthArtists];
     const seen = new Set();
     seeds = seeds.filter((a) => a && !seen.has(a.name) && seen.add(a.name));
 
@@ -193,7 +237,7 @@ export async function getRecommendations({ vibeId = 'auto', limit = 15, profile 
     // 1) Cortes que no conoces de tus artistas del momento
     for (const artist of shuffle(seeds.slice(0, 6)).slice(0, 3)) {
       try {
-        const found = await searchTracks(`artist:"${artist.name}"`, 10);
+        const found = await searchTracks(`artist:"${artist.name}"`, SEARCH_PAGE);
         shuffle(found).slice(0, 2).forEach((t) =>
           take(t, `porque ${artist.name} está entre lo que más escuchas`));
       } catch { /* siguiente semilla */ }
@@ -215,13 +259,16 @@ export async function getRecommendations({ vibeId = 'auto', limit = 15, profile 
 
     // 3) Artistas NUEVOS para ti, cercanos a tu terreno
     const knownNames = profile?.knownArtistNames ?? new Set(seeds.map((a) => a.name));
-    const genreSeeds = seeds.flatMap((a) => a.genres || []).slice(0, 3);
+    const genreSeeds = seeds.flatMap((a) => a.genres || []).filter((g) => !vibe?.query || vibe.query.test(g)).slice(0, 3);
+    const vibeQueries = VIBE_SEARCH_QUERIES[vibeId];
     const genreQueries = genreSeeds.length
       ? genreSeeds.map((g) => `genre:"${g}"`)
-      : (VIBE_SEARCH_QUERIES[vibeId] || VIBE_SEARCH_QUERIES.flow).slice(0, 2);
-    for (const q of shuffle(genreQueries).slice(0, 2)) {
+      : (vibeQueries || VIBE_SEARCH_QUERIES.flow);
+    // Sin semillas propias en esta vibra, todos los descubrimientos son nuevos
+    const rounds = seeds.length ? 2 : 4;
+    for (const q of shuffle(genreQueries).slice(0, rounds)) {
       try {
-        const found = await searchTracks(q, 12);
+        const found = await searchTracks(q, SEARCH_PAGE);
         const fresh = found.filter((t) => t.artists?.[0]?.name && !knownNames.has(t.artists[0].name));
         shuffle(fresh).slice(0, 2).forEach((t) =>
           take(t, `artista nuevo para ti: ${t.artists[0].name}`));
@@ -235,10 +282,18 @@ export async function getRecommendations({ vibeId = 'auto', limit = 15, profile 
   }
 }
 
-/** Filtra una lista de tracks analizados por la vibra elegida. */
-export function filterByVibe(analyzedTracks, vibeId) {
+/**
+ * Filtra tracks analizados por la vibra elegida.
+ * strict=true: solo los que CONFIRMAN la vibra por género (para tu propia
+ * música, que puede ser de cualquier estilo). strict=false: descarta solo
+ * los que la contradicen y conserva los de género desconocido (para los
+ * resultados de búsqueda de la vibra, que ya vienen filtrados por Spotify).
+ */
+export function filterByVibe(analyzedTracks, vibeId, { strict = false } = {}) {
   const vibe = VIBE_PRESETS.find((v) => v.id === vibeId);
   if (!vibe || !vibe.query) return analyzedTracks;
-  const filtered = analyzedTracks.filter((t) => vibe.query.test(t.dj.genres.join(' ')));
-  return filtered.length ? filtered : analyzedTracks;
+  return analyzedTracks.filter((t) => {
+    const m = matchesVibe(t, vibeId);
+    return strict ? m === true : m !== false;
+  });
 }

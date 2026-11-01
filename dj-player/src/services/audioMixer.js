@@ -90,6 +90,10 @@ export async function rampVolume(setVolume, from, to, durationMs, steps = 12, is
 
 /**
  * Transición completa entre dos tracks con voz DJ.
+ * El DJ habla SOBRE EL FINAL de la canción actual y la siguiente arranca
+ * cuando termina de hablar. Así nunca hay cambio de pista mientras suena la
+ * voz: en móviles, el inicio de una pista nueva (sobre todo en la app de
+ * Spotify) toma el foco de audio y cortaba la voz a medias.
  * @param {object} params
  * @param {Function} params.setVolume  - setVolume(0..1) del player de Spotify
  * @param {Function} params.playNext   - inicia el siguiente track
@@ -97,24 +101,33 @@ export async function rampVolume(setVolume, from, to, durationMs, steps = 12, is
  * @param {number} params.duckLevel   - volumen bajo la voz (-3 dB ≈ 0.35)
  * @param {Function} params.isActive  - false = sesión cancelada, abortar
  */
-export async function performTransition({ setVolume, playNext, voice, duckLevel = 0.35, isActive = () => true }) {
-  // 1) Fade out del track actual (2 s)
-  await rampVolume(setVolume, 1.0, 0.15, 2000, 12, isActive);
-  if (!isActive()) return;
-
+export async function performTransition({ setVolume, playNext, voice, duckLevel = 0.3, isActive = () => true }) {
   if (voice && voice.provider !== 'none') {
-    // 2) Arranca el siguiente track "por debajo" de la voz
-    await playNext();
+    // 1) Baja la canción actual a nivel de fondo (1,5 s)
+    await rampVolume(setVolume, 1.0, duckLevel, 1500, 8, isActive);
     if (!isActive()) return;
-    await setVolume(duckLevel);
-    // 3) Voz DJ encima del intro del siguiente track
+    // 2) La voz del DJ sobre el cierre de la canción actual
     try { await voice.speak(); } catch (err) { console.warn('[Mixer] La voz falló:', err.message); }
     if (!isActive()) return;
-    // 4) Sube el siguiente track a volumen normal (2 s)
-    await rampVolume(setVolume, duckLevel, 1.0, 2000, 12, isActive);
+    // 3) Arranca la siguiente y sube a volumen normal (2 s)
+    await playNext();
+    if (!isActive()) return;
+    await rampVolume(setVolume, duckLevel, 1.0, 2000, 10, isActive);
   } else {
+    // Sin voz: fade out (2 s) → siguiente → fade in (3 s)
+    await rampVolume(setVolume, 1.0, 0.15, 2000, 12, isActive);
+    if (!isActive()) return;
     await playNext();
     if (!isActive()) return;
     await rampVolume(setVolume, 0.15, 1.0, 3000, 12, isActive);
   }
+}
+
+/** Cuánto antes del final de la canción debe empezar la transición. */
+export function transitionLeadMs(voice) {
+  const FADE_MS = 1500;
+  const MARGIN_MS = 1500;
+  if (!voice || voice.provider === 'none') return 4000;
+  const speech = voice.estimatedMs || 8000;
+  return Math.min(30000, Math.max(5000, FADE_MS + speech + MARGIN_MS));
 }

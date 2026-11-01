@@ -37,12 +37,20 @@ export async function prepareDJVoice(text) {
       const buffer = await generateDJVoice(text, getAudioContext());
       if (buffer) {
         const limit = buffer.duration * 1000 + 3000;
-        return { provider: 'elevenlabs', speak: (opts) => withTimeout(playVoiceBuffer(buffer, opts), limit) };
+        return {
+          provider: 'elevenlabs',
+          estimatedMs: buffer.duration * 1000,
+          speak: (opts) => withTimeout(playVoiceBuffer(buffer, opts), limit)
+        };
       }
       if (PROVIDER === 'elevenlabs') return SILENT;
     }
     if (localTTSAvailable()) {
-      return { provider: 'local', speak: (opts) => withTimeout(speakLocal(text, opts), maxSpeechMs(text) + 2000) };
+      return {
+        provider: 'local',
+        estimatedMs: (text.length / 14) * 1000, // ~14 caracteres por segundo
+        speak: (opts) => withTimeout(speakLocal(text, opts), maxSpeechMs(text) + 2000)
+      };
     }
   } catch (err) {
     console.warn('[Voice] No pude preparar la voz:', err.message || err);
